@@ -171,6 +171,8 @@ def test_photo_must_be_an_image_data_url(client, payload):
         "data:text/html;base64,PGI+aGk8L2I+",  # not an image media type
         "data:image/svg+xml;base64,PHN2Zy8+",  # SVG can carry scripts
         "data:image/png;base64,not!!valid==",  # not base64
+        "data:image/png;base64,A",  # impossible base64 quantum
+        "data:image/png;base64,abcd=",  # invalid padding placement
     ):
         response = client.post(BASE, json={**payload, "photo": bad})
         assert response.status_code == 422, bad
@@ -179,6 +181,19 @@ def test_photo_must_be_an_image_data_url(client, payload):
 def test_photo_rejects_oversized_payload(client, payload):
     huge = "data:image/png;base64," + "A" * (1_500_000)
     response = client.post(BASE, json={**payload, "photo": huge})
+    assert response.status_code == 422
+
+
+def test_photo_size_cap_is_exact(client, payload):
+    import base64
+
+    at_limit = "data:image/png;base64," + base64.b64encode(b"\x00" * 1_048_576).decode()
+    over_limit = "data:image/png;base64," + base64.b64encode(b"\x00" * 1_048_577).decode()
+
+    assert client.post(BASE, json={**payload, "photo": at_limit}).status_code == 201
+    response = client.post(
+        BASE, json={**payload, "email": "over@example.com", "photo": over_limit}
+    )
     assert response.status_code == 422
 
 

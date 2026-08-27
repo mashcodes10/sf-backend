@@ -1,3 +1,4 @@
+import base64
 import re
 from datetime import datetime, timezone
 
@@ -19,7 +20,13 @@ def _validate_photo(value: str | None) -> str | None:
         raise ValueError(
             "photo must be a base64 data URL with media type image/png, image/jpeg, image/gif, or image/webp"
         )
-    if len(match.group("data")) * 3 // 4 > PHOTO_MAX_BYTES:
+    try:
+        # Strict decode: the regex only screens the alphabet, not quantum
+        # length or padding placement, and the size cap must measure real bytes.
+        decoded = base64.b64decode(match.group("data"), validate=True)
+    except ValueError as error:  # binascii.Error subclasses ValueError
+        raise ValueError("photo payload is not well-formed base64") from error
+    if len(decoded) > PHOTO_MAX_BYTES:
         raise ValueError("photo must decode to 1 MiB or less")
     return value
 
