@@ -1,6 +1,7 @@
 """Render a contact as a vCard 3.0 document (RFC 2426)."""
 
 import re
+from urllib.parse import quote
 
 from app.models import Address, Contact
 
@@ -26,20 +27,26 @@ def _escape(value: str) -> str:
 
 
 def _fold(line: str) -> list[str]:
-    """Split a content line into 75-octet chunks joined by CRLF + space."""
+    """
+    Fold a content line so every physical line is at most 75 octets: the
+    first carries 75 of payload, continuations carry their mandatory leading
+    space plus up to 74 more.
+    """
     encoded = line.encode("utf-8")
     if len(encoded) <= _MAX_LINE_OCTETS:
         return [line]
 
     chunks: list[str] = []
+    budget = _MAX_LINE_OCTETS
     while encoded:
-        cut = min(_MAX_LINE_OCTETS, len(encoded))
+        cut = min(budget, len(encoded))
         # Never split inside a multi-byte UTF-8 sequence: back up while the
         # byte after the cut is a continuation byte (0b10xxxxxx).
         while cut < len(encoded) and cut > 1 and (encoded[cut] & 0xC0) == 0x80:
             cut -= 1
         chunks.append(encoded[:cut].decode("utf-8"))
         encoded = encoded[cut:]
+        budget = _MAX_LINE_OCTETS - 1  # continuations lose one octet to the fold space
     return [chunks[0], *(" " + chunk for chunk in chunks[1:])]
 
 
@@ -56,6 +63,25 @@ def _adr_line(address: Address) -> str:
         address.country or "",
     )
     return f"ADR{params}:" + ";".join(_escape(part) for part in components)
+
+
+def content_disposition(contact: Contact) -> str:
+    """
+    Attachment header for the contact's .vcf download.
+
+    Response headers travel as Latin-1, so a non-Latin name cannot go into the
+    plain `filename` parameter. Send an ASCII-safe fallback there and the real
+    UTF-8 name percent-encoded in RFC 5987 `filename*`, which every current
+    browser prefers.
+    """
+    stem = f"{contact.first_name}-{contact.last_name}".strip().lower().replace(" ", "-")
+    ascii_stem = re.sub(r"[^a-z0-9._-]", "", stem).strip("._-")
+    if not ascii_stem:  # nothing readable survived (fully non-Latin name)
+        ascii_stem = f"contact-{contact.id}"
+    return (
+        f'attachment; filename="{ascii_stem}.vcf"; '
+        f"filename*=UTF-8''{quote(stem)}.vcf"
+    )
 
 
 def contact_to_vcard(contact: Contact) -> str:

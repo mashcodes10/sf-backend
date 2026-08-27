@@ -63,8 +63,22 @@ def test_vcard_folds_long_lines(client, payload):
 
     card = client.get(f"{BASE}/{contact_id}/vcard").text
     for line in card.split("\r\n"):
-        assert len(line.encode("utf-8")) <= 76, line  # 75 + leading fold space
+        assert len(line.encode("utf-8")) <= 75, line  # fold space included
     assert "\r\n x" in card  # the NOTE actually folded
+
+
+def test_vcard_filename_survives_non_latin_names(client, payload):
+    contact_id = _create(
+        client,
+        {"first_name": "李", "last_name": "雷", "email": "li@example.com"},
+    )
+
+    response = client.get(f"{BASE}/{contact_id}/vcard")
+    assert response.status_code == 200
+    disposition = response.headers["content-disposition"]
+    # ASCII fallback for old agents, RFC 5987 filename* with the real name.
+    assert f'filename="contact-{contact_id}.vcf"' in disposition
+    assert "filename*=UTF-8''%E6%9D%8E-%E9%9B%B7.vcf" in disposition
 
 
 def test_vcard_missing_contact_returns_404(client):

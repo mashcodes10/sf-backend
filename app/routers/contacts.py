@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app import crud
 from app.database import get_db
 from app.models import Contact
-from app.vcard import contact_to_vcard
+from app.vcard import contact_to_vcard, content_disposition
 from app.schemas import (
     ContactCreate,
     ContactPage,
@@ -146,11 +146,10 @@ def export_contact_vcard(contact_id: int = CONTACT_ID, db: Session = Depends(get
     imports cleanly into Apple Contacts, Google Contacts, and Outlook.
     """
     contact = _get_or_404(db, contact_id)
-    filename = f"{contact.first_name}-{contact.last_name}.vcf".lower().replace(" ", "-")
     return Response(
         content=contact_to_vcard(contact),
         media_type="text/vcard",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition(contact)},
     )
 
 
