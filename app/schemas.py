@@ -1,6 +1,27 @@
+import re
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+# Photos travel inline as base64 data URLs (the database is in-memory, so there
+# is no file store). Cap the decoded size and pin the media types we render.
+PHOTO_MAX_BYTES = 1024 * 1024  # 1 MiB decoded
+_PHOTO_DATA_URL_RE = re.compile(
+    r"^data:image/(png|jpeg|gif|webp);base64,(?P<data>[A-Za-z0-9+/]+={0,2})$"
+)
+
+
+def _validate_photo(value: str | None) -> str | None:
+    if value is None:
+        return None
+    match = _PHOTO_DATA_URL_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            "photo must be a base64 data URL with media type image/png, image/jpeg, image/gif, or image/webp"
+        )
+    if len(match.group("data")) * 3 // 4 > PHOTO_MAX_BYTES:
+        raise ValueError("photo must decode to 1 MiB or less")
+    return value
 
 
 class ContactBase(BaseModel):
@@ -69,6 +90,19 @@ class ContactBase(BaseModel):
         description="Free-form notes about the contact. No length limit.",
         examples=["Met at the SF hackathon."],
     )
+    photo: str | None = Field(
+        default=None,
+        description=(
+            "Profile photo as a base64 data URL (`data:image/...;base64,...`). "
+            "PNG, JPEG, GIF, or WebP; at most 1 MiB decoded."
+        ),
+        examples=["data:image/png;base64,iVBORw0KGgo="],
+    )
+
+    @field_validator("photo")
+    @classmethod
+    def _check_photo(cls, value: str | None) -> str | None:
+        return _validate_photo(value)
 
 
 _FULL_EXAMPLE = {
@@ -134,6 +168,15 @@ class ContactUpdate(BaseModel):
     postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
     country: str | None = Field(default=None, max_length=120, description="New country.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
+    photo: str | None = Field(
+        default=None,
+        description="New profile photo as a base64 data URL; `null` removes the current photo.",
+    )
+
+    @field_validator("photo")
+    @classmethod
+    def _check_photo(cls, value: str | None) -> str | None:
+        return _validate_photo(value)
 
 
 class ContactRead(ContactBase):
