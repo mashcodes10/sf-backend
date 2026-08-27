@@ -1,5 +1,5 @@
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models import Address, Contact
 from app.schemas import AddressCreate, ContactCreate, ContactReplace, ContactUpdate
@@ -53,6 +53,9 @@ def list_contacts(
     if sort_by not in SORTABLE_FIELDS:
         sort_by = "id"
     column = getattr(Contact, sort_by)
+    # Serialising a page touches every contact's addresses; batch them into
+    # one IN-query instead of one lazy load per row.
+    stmt = stmt.options(selectinload(Contact.addresses))
     stmt = stmt.order_by(column.desc() if order == "desc" else column.asc())
 
     items = db.execute(stmt.limit(limit).offset(offset)).scalars().all()

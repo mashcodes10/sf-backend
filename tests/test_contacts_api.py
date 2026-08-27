@@ -225,6 +225,33 @@ def test_patch_replaces_and_clears_addresses(client, payload):
     assert cleared.json()["addresses"] == []
 
 
+def test_list_batches_address_loading(client, payload):
+    """Serialising a page must not lazy-load addresses once per contact (N+1)."""
+    from sqlalchemy import event
+
+    from app.database import engine
+
+    for index in range(5):
+        client.post(BASE, json={**payload, "email": f"user{index}@example.com"})
+
+    statements: list[str] = []
+
+    def record(_conn, _cursor, statement, *_args) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        response = client.get(BASE, params={"limit": 200})
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 5
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    # One count, one page, one batched selectinload for all addresses.
+    assert len(selects) <= 3, selects
+
+
 def test_deleting_a_contact_deletes_its_addresses(client, payload):
     from sqlalchemy import func, select
 
