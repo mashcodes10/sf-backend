@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app import crud
 from app.database import get_db
 from app.models import Contact
+from app.vcard import contact_to_vcard, content_disposition
 from app.schemas import (
     ContactCreate,
     ContactPage,
@@ -119,6 +121,36 @@ def list_contacts(
 def get_contact(contact_id: int = CONTACT_ID, db: Session = Depends(get_db)) -> Contact:
     """Fetch a single contact by its id."""
     return _get_or_404(db, contact_id)
+
+
+@router.get(
+    "/{contact_id}/vcard",
+    operation_id="exportContactVcard",
+    summary="Export a contact as a vCard",
+    response_description="A vCard 3.0 document, offered as a .vcf download.",
+    response_class=PlainTextResponse,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "A vCard 3.0 document, offered as a .vcf download.",
+            "content": {"text/vcard": {"example": "BEGIN:VCARD\r\nVERSION:3.0\r\n..."}},
+        },
+        status.HTTP_404_NOT_FOUND: NOT_FOUND,
+    },
+)
+def export_contact_vcard(contact_id: int = CONTACT_ID, db: Session = Depends(get_db)) -> Response:
+    """
+    Export one contact as a vCard 3.0 (.vcf) file.
+
+    The card carries the name, email, phone, company and title, every typed
+    address, the notes, and the profile photo when one is set — so the export
+    imports cleanly into Apple Contacts, Google Contacts, and Outlook.
+    """
+    contact = _get_or_404(db, contact_id)
+    return Response(
+        content=contact_to_vcard(contact),
+        media_type="text/vcard",
+        headers={"Content-Disposition": content_disposition(contact)},
+    )
 
 
 @router.put(
