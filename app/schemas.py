@@ -7,6 +7,9 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, fie
 # Photos travel inline as base64 data URLs (the database is in-memory, so there
 # is no file store). Cap the decoded size and pin the media types we render.
 PHOTO_MAX_BYTES = 1024 * 1024  # 1 MiB decoded
+# The longest base64 encoding of PHOTO_MAX_BYTES: reject anything longer
+# before decoding, so oversized payloads cost a length check, not a decode.
+_PHOTO_MAX_ENCODED_LENGTH = (PHOTO_MAX_BYTES + 2) // 3 * 4
 _PHOTO_DATA_URL_RE = re.compile(
     r"^data:image/(png|jpeg|gif|webp);base64,(?P<data>[A-Za-z0-9+/]+={0,2})$"
 )
@@ -20,10 +23,13 @@ def _validate_photo(value: str | None) -> str | None:
         raise ValueError(
             "photo must be a base64 data URL with media type image/png, image/jpeg, image/gif, or image/webp"
         )
+    data = match.group("data")
+    if len(data) > _PHOTO_MAX_ENCODED_LENGTH:
+        raise ValueError("photo must decode to 1 MiB or less")
     try:
         # Strict decode: the regex only screens the alphabet, not quantum
         # length or padding placement, and the size cap must measure real bytes.
-        decoded = base64.b64decode(match.group("data"), validate=True)
+        decoded = base64.b64decode(data, validate=True)
     except ValueError as error:  # binascii.Error subclasses ValueError
         raise ValueError("photo payload is not well-formed base64") from error
     if len(decoded) > PHOTO_MAX_BYTES:
