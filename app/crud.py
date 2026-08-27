@@ -1,8 +1,8 @@
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.models import Contact
-from app.schemas import ContactCreate, ContactReplace, ContactUpdate
+from app.models import Address, Contact
+from app.schemas import AddressCreate, ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
 
@@ -53,16 +53,23 @@ def list_contacts(
     if sort_by not in SORTABLE_FIELDS:
         sort_by = "id"
     column = getattr(Contact, sort_by)
+    # Serialising a page touches every contact's addresses; batch them into
+    # one IN-query instead of one lazy load per row.
+    stmt = stmt.options(selectinload(Contact.addresses))
     stmt = stmt.order_by(column.desc() if order == "desc" else column.asc())
 
     items = db.execute(stmt.limit(limit).offset(offset)).scalars().all()
     return list(items), total
 
 
+def _build_addresses(items: list[AddressCreate]) -> list[Address]:
+    return [Address(**item.model_dump()) for item in items]
+
+
 def create_contact(db: Session, payload: ContactCreate) -> Contact:
-    data = payload.model_dump()
+    data = payload.model_dump(exclude={"addresses"})
     data["email"] = _normalize_email(data["email"])
-    contact = Contact(**data)
+    contact = Contact(**data, addresses=_build_addresses(payload.addresses))
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -70,16 +77,20 @@ def create_contact(db: Session, payload: ContactCreate) -> Contact:
 
 
 def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> Contact:
-    for field, value in payload.model_dump().items():
+    for field, value in payload.model_dump(exclude={"addresses"}).items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    # delete-orphan cascade drops the rows the new list no longer contains
+    contact.addresses = _build_addresses(payload.addresses)
     db.commit()
     db.refresh(contact)
     return contact
 
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    for field, value in payload.model_dump(exclude_unset=True, exclude={"addresses"}).items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    if "addresses" in payload.model_fields_set:
+        contact.addresses = _build_addresses(payload.addresses or [])
     db.commit()
     db.refresh(contact)
     return contact

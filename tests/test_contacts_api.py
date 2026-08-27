@@ -146,6 +146,128 @@ def test_root_lists_entrypoints(client):
     assert body["contacts"] == BASE
 
 
+def test_address_types_stay_in_sync_with_the_model():
+    from typing import get_args
+
+    from app.models import ADDRESS_TYPES
+    from app.schemas import AddressType
+
+    assert get_args(AddressType) == ADDRESS_TYPES
+
+
+def test_create_contact_with_multiple_addresses(client, payload):
+    payload["addresses"].append({"type": "Work", "address": "500 Howard St", "city": "San Francisco"})
+    response = client.post(BASE, json=payload)
+    assert response.status_code == 201
+    body = response.json()
+    assert [a["type"] for a in body["addresses"]] == ["Home", "Work"]
+    assert all(a["id"] > 0 for a in body["addresses"])
+
+
+def test_addresses_default_to_empty_list(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": []})
+    assert response.status_code == 201
+    assert response.json()["addresses"] == []
+
+
+def test_address_type_is_validated(client, payload):
+    payload["addresses"][0]["type"] = "Vacation"
+    assert client.post(BASE, json=payload).status_code == 422
+
+
+def test_put_replaces_the_address_list(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.com",
+            "addresses": [{"type": "Other", "city": "London", "country": "UK"}],
+        },
+    )
+    assert response.status_code == 200
+    addresses = response.json()["addresses"]
+    assert len(addresses) == 1
+    assert addresses[0]["type"] == "Other"
+    assert addresses[0]["city"] == "London"
+
+
+def test_put_without_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com"},
+    )
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []  # PUT is a full replacement
+
+
+def test_patch_leaves_addresses_alone_when_omitted(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"phone": "+1-000-000-0000"})
+    assert response.status_code == 200
+    assert len(response.json()["addresses"]) == 1
+
+
+def test_patch_replaces_and_clears_addresses(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+
+    replaced = client.patch(
+        f"{BASE}/{contact_id}",
+        json={"addresses": [{"type": "Work", "city": "NYC"}, {"type": "Other", "city": "LA"}]},
+    )
+    assert replaced.status_code == 200
+    assert [a["type"] for a in replaced.json()["addresses"]] == ["Work", "Other"]
+
+    cleared = client.patch(f"{BASE}/{contact_id}", json={"addresses": []})
+    assert cleared.status_code == 200
+    assert cleared.json()["addresses"] == []
+
+
+def test_list_batches_address_loading(client, payload):
+    """Serialising a page must not lazy-load addresses once per contact (N+1)."""
+    from sqlalchemy import event
+
+    from app.database import engine
+
+    for index in range(5):
+        client.post(BASE, json={**payload, "email": f"user{index}@example.com"})
+
+    statements: list[str] = []
+
+    def record(_conn, _cursor, statement, *_args) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        response = client.get(BASE, params={"limit": 200})
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 5
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    # One count, one page, one batched selectinload for all addresses.
+    assert len(selects) <= 3, selects
+
+
+def test_deleting_a_contact_deletes_its_addresses(client, payload):
+    from sqlalchemy import func, select
+
+    from app.database import SessionLocal
+    from app.models import Address
+
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    assert client.delete(f"{BASE}/{contact_id}").status_code == 204
+
+    with SessionLocal() as db:
+        orphans = db.execute(
+            select(func.count()).select_from(Address).where(Address.contact_id == contact_id)
+        ).scalar_one()
+    assert orphans == 0
+
+
 # A 1x1 PNG, small enough to inline in every photo test.
 PHOTO = (
     "data:image/png;base64,"
