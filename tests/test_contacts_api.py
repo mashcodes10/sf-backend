@@ -144,3 +144,76 @@ def test_delete_contact(client, payload):
 def test_root_lists_entrypoints(client):
     body = client.get("/").json()
     assert body["contacts"] == BASE
+
+
+# A 1x1 PNG, small enough to inline in every photo test.
+PHOTO = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_create_contact_with_photo(client, payload):
+    response = client.post(BASE, json={**payload, "photo": PHOTO})
+    assert response.status_code == 201
+    assert response.json()["photo"] == PHOTO
+
+
+def test_photo_defaults_to_null(client, payload):
+    response = client.post(BASE, json=payload)
+    assert response.status_code == 201
+    assert response.json()["photo"] is None
+
+
+def test_photo_must_be_an_image_data_url(client, payload):
+    for bad in (
+        "https://example.com/ada.png",  # not a data URL
+        "data:text/html;base64,PGI+aGk8L2I+",  # not an image media type
+        "data:image/svg+xml;base64,PHN2Zy8+",  # SVG can carry scripts
+        "data:image/png;base64,not!!valid==",  # not base64
+        "data:image/png;base64,A",  # impossible base64 quantum
+        "data:image/png;base64,abcd=",  # invalid padding placement
+    ):
+        response = client.post(BASE, json={**payload, "photo": bad})
+        assert response.status_code == 422, bad
+
+
+def test_photo_rejects_oversized_payload(client, payload):
+    huge = "data:image/png;base64," + "A" * (1_500_000)
+    response = client.post(BASE, json={**payload, "photo": huge})
+    assert response.status_code == 422
+
+
+def test_photo_size_cap_is_exact(client, payload):
+    import base64
+
+    at_limit = "data:image/png;base64," + base64.b64encode(b"\x00" * 1_048_576).decode()
+    over_limit = "data:image/png;base64," + base64.b64encode(b"\x00" * 1_048_577).decode()
+
+    assert client.post(BASE, json={**payload, "photo": at_limit}).status_code == 201
+    response = client.post(
+        BASE, json={**payload, "email": "over@example.com", "photo": over_limit}
+    )
+    assert response.status_code == 422
+
+
+def test_patch_sets_and_clears_photo(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+
+    updated = client.patch(f"{BASE}/{contact_id}", json={"photo": PHOTO})
+    assert updated.status_code == 200
+    assert updated.json()["photo"] == PHOTO
+
+    cleared = client.patch(f"{BASE}/{contact_id}", json={"photo": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["photo"] is None
+
+
+def test_put_without_photo_clears_it(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": PHOTO}).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com"},
+    )
+    assert response.status_code == 200
+    assert response.json()["photo"] is None  # PUT is a full replacement
